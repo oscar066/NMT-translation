@@ -1,6 +1,7 @@
 
 import torch 
 import torch.nn as nn
+import numpy as np
 
 class NMTDecoder(nn.Module):
     def __init__(self, num_embeddings, embedding_size, rnn_hidden_size, bos_index):
@@ -43,4 +44,66 @@ class NMTDecoder(nn.Module):
         Returns:
             output_vectors (torch.Tensor): prediction vectors at each output step
         """   
-        pass
+        if target_sequence is None:
+            sample_probability = 1.0
+        else:
+            target_sequence = target_sequence.permute(1, 0)
+            output_sequence_size = target_sequence.size(0)
+
+        # use the provided encoder hidden state as the initial hidden state
+        h_t = self.hidden_map(initial_hidden_state)
+
+        batch_size = encoder_state.size(0)
+
+        # initialize the context vectors to zeros
+        context_vectors = self._init_context_vectors(batch_size)
+
+        # initialize first y_t word as BOS
+        y_t_index = self._init_indices(batch_size)
+
+        h_t = h_t.to(encoder_state.device)
+        y_t_index = y_t_index.to(encoder_state.device)
+        context_vectors = context_vectors.to(encoder_state.device)
+
+        output_vectors = []
+        self._cached_p_attn = []
+        self._cached_ht = []
+        self._cached_decoder_state = encoder_state.cpu().detach().numpy()
+
+        for i in range(output_sequence_size):
+            # Shedule sampling is whe
+            use_sample = np.random.random() < sample_probability
+            if not use_sample:
+                y_t_index = target_sequence[i]
+
+            # Step 1: Embed word and concat with previous context
+            y_input_vector = self.target_embedding(y_t_index)
+            rnn_input = torch.cat([y_input_vector, context_vectors], dim=1)
+
+            # step 2: Make a GRU step , getting a new hidden vector 
+            h_t = self.gru_cell(rnn_input, h_t)
+            self._cached_ht.append(h_t.cpu().detach().numpy())
+
+            # step 3: Use the current hidden to attend to the encoder state
+            context_vectors , p_attn, _ = verbose_attention(encoder_state_vectors=encoder_state,
+                                                            query_vector=h_t)
+            
+            # auxillary: Cache the attention probabilities for visualization
+            self._cached_p_attn.append(p_attn.cpu().detach().numpy())
+
+            # step 4: Use the current hidden and context vectors to make a prediction of the next word
+            prediction_vector = torch.cat((context_vectors, h_t), dim=1)
+            score_for_y_t_index = self.classifier(F.dropout(prediction_vector, 0.3))
+
+            if use_sample:
+                p_y_t_index = F.softmax(score_for_y_t_index * self._sampling_temperature, dim=1)
+                # _, y_t_index = torch.max(p_y_t_index, 1)
+                y_t_index = torch.multimodal(p_y_t_index, 1).squeeze()
+
+            # auxillary: collect the prediction scores 
+            output_vectors.append(score_for_y_t_index)
+
+        output_vectors = torch.stack(output_vectors).permute(1, 0, 2)
+
+        return output_vectors
+

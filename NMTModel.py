@@ -1,4 +1,7 @@
+import torch 
 
+import NMTEncoder as NMTEncoder
+import NMTDecoder as NMTDecoder
 
 class NMTModel(nn.Module):
     """
